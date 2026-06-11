@@ -49,8 +49,19 @@ def generate_m_sequence(register_state, taps, length=None):
     if length <= 0:
         raise ValueError('length must be positive')
 
-    # TODO: clock the LFSR and map output bits to bipolar chips.
-    raise NotImplementedError('请实现 m 序列生成')
+    state = state.copy()
+    chips = np.empty(int(length), dtype=int)
+
+    for index in range(int(length)):
+        output_bit = state[-1]
+        chips[index] = 1 if output_bit == 0 else -1
+        feedback = 0
+        for tap in taps:
+            feedback ^= int(state[tap - 1])
+        state[1:] = state[:-1]
+        state[0] = feedback
+
+    return chips
 
 
 def dsss_spread(bits, pn_chips):
@@ -65,8 +76,8 @@ def dsss_spread(bits, pn_chips):
     if bits.ndim != 1 or not np.all((bits == 0) | (bits == 1)):
         raise ValueError('bits must be a one-dimensional binary array')
 
-    # TODO: BPSK-map each bit and multiply by the PN chips.
-    raise NotImplementedError('请实现 DSSS 扩频')
+    symbols = bpsk_modulate(bits)
+    return np.repeat(symbols, len(pn_chips)) * np.tile(pn_chips, len(symbols))
 
 
 def dsss_despread(received_chips, pn_chips):
@@ -81,8 +92,9 @@ def dsss_despread(received_chips, pn_chips):
     if received_chips.ndim != 1 or len(received_chips) % len(pn_chips) != 0:
         raise ValueError('received_chips length must be a multiple of PN length')
 
-    # TODO: reshape by spreading factor, correlate with PN chips, and decide bits.
-    raise NotImplementedError('请实现 DSSS 解扩')
+    chip_blocks = received_chips.reshape(-1, len(pn_chips))
+    correlations = chip_blocks @ pn_chips
+    return (correlations < 0).astype(int)
 
 
 def processing_gain_db(spreading_factor):
@@ -90,8 +102,7 @@ def processing_gain_db(spreading_factor):
     if spreading_factor <= 0:
         raise ValueError('spreading_factor must be positive')
 
-    # TODO: compute 10 * log10(N).
-    raise NotImplementedError('请实现处理增益计算')
+    return float(10 * np.log10(spreading_factor))
 
 
 def despread_with_timing_offset(received_chips, pn_chips, max_offset):
@@ -99,8 +110,34 @@ def despread_with_timing_offset(received_chips, pn_chips, max_offset):
     if max_offset < 0:
         raise ValueError('max_offset must be non-negative')
 
-    # TODO: 选做：请实现同步偏移搜索解扩。
-    raise NotImplementedError('选做：请实现同步偏移搜索')
+    received_chips = np.asarray(received_chips, dtype=float)
+    pn_chips = _validate_pn_chips(pn_chips)
+    if received_chips.ndim != 1:
+        raise ValueError('received_chips must be one-dimensional')
+
+    best_bits = None
+    best_score = -np.inf
+    pn_length = len(pn_chips)
+
+    for offset in range(-max_offset, max_offset + 1):
+        start = max(offset, 0)
+        stop = len(received_chips) + min(offset, 0)
+        candidate = received_chips[start:stop]
+        usable_length = (len(candidate) // pn_length) * pn_length
+        if usable_length == 0:
+            continue
+
+        candidate = candidate[:usable_length]
+        blocks = candidate.reshape(-1, pn_length)
+        correlations = blocks @ pn_chips
+        score = float(np.mean(np.abs(correlations)))
+        if score > best_score:
+            best_score = score
+            best_bits = (correlations < 0).astype(int)
+
+    if best_bits is None:
+        raise ValueError('received_chips is too short for the requested offset range')
+    return best_bits
 
 
 def _correlation_values(received_chips, pn_chips):
